@@ -8,7 +8,7 @@ HTML5 Canvas 2D에 다수의 Blob(메타볼)을 띄우고, 각 Blob을 signed-di
 
 ---
 
-## 🎬 라이브 데모 (Live Demo)
+## 🎬 라이브 데모
 
 > **🛠️ 진행 중 (In Progress)** — OpenCode CLI 환경에서 [MiniMax-M3](https://example.com) 모델로 작업 예정
 
@@ -19,7 +19,7 @@ HTML5 Canvas 2D에 다수의 Blob(메타볼)을 띄우고, 각 Blob을 signed-di
 
 ---
 
-## 🤖 생성 정보 (Attribution)
+## 🤖 생성 정보
 
 이 프로젝트의 코드는 아래 모델과 프롬프트를 이용해 **자동으로 생성**됩니다.
 
@@ -48,7 +48,7 @@ thread responsive. 모든 의존관계의 코드를 하나의 HTML에 담는 형
 
 ---
 
-## ✨ 주요 특징 (예정 — Features)
+## ✨ 주요 특징 (예정)
 
 - 🧪 **메타볼 합성 (Metaball composition)** — SDF threshold + 부드러운 그라데이션으로 블롭 간 자연스러운 융합/분리
 - 🖱️ **마우스 인터랙션** — hover 시 가장 가까운 Blob 끌어당김 + 클릭 시 새 Blob 분사
@@ -58,7 +58,7 @@ thread responsive. 모든 의존관계의 코드를 하나의 HTML에 담는 형
 
 ---
 
-## 🚀 실행 방법 (Quick Start)
+## 🚀 실행 방법
 
 > ⚠️ **현재 단계**: OpenCode CLI에서 코드 자동 생성 중. 이 섹션은 배포 후 자동 갱신됩니다.
 
@@ -77,7 +77,7 @@ python3 -m http.server 8000
 
 ---
 
-## 🎮 조작법 (예정 — Controls)
+## 🎮 조작법 (예정)
 
 | 입력 | 효과 |
 |---|---|
@@ -88,7 +88,7 @@ python3 -m http.server 8000
 
 ---
 
-## 🛠️ 기술 스택 (예정 — Tech Stack)
+## 🛠️ 기술 스택 (예정)
 
 | 영역 | 사용 기술 |
 |---|---|
@@ -115,7 +115,7 @@ interactive-metaballs/
 
 ---
 
-## 🎨 디자인 결정 (예정 — Design Choices)
+## 🎨 디자인 결정 (예정)
 
 > OpenCode 작업 중 결정될 디자인 포인트를 이 섹션에 누적합니다.
 
