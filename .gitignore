@@ -1,0 +1,23 @@
+# Node / IDE
+node_modules/
+dist/
+build/
+.idea/
+*.swp
+
+# OpenCode / Claude / Codex
+.codegraph/
+.omo/
+.playwright-mcp/
+
+# Vercel (pre-add to prevent OpenCode auto-modify — coding-mission v3.5 pattern)
+.vercel/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
