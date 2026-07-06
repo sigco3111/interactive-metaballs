@@ -178,13 +178,8 @@ uniform float uTime;
 uniform float uCoreLo, uCoreHi, uHaloLo, uHaloHi, uGlowStrength;
 uniform vec3 uBgTop, uBgBot;
 uniform float uNoiseAmp, uNoiseScale, uTintSpeed, uVigAmp;
-uniform vec2 uMouse;
-uniform float uMouseActive, uMousePressed;
-uniform float uCursorRadius, uCursorIntensity;
-uniform vec3 uCursorColor;
 uniform float uResetFlash;
 uniform float uBloomStrength;
-uniform vec2 uFboSize;
 out vec4 outColor;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
@@ -223,13 +218,6 @@ void main() {
   bg = mix(bg, bg * vec3(1.05, 0.98, 0.92), tintCycle * 0.25);
 
   vec3 col = bg + glow;
-
-  if (uMouseActive > 0.5) {
-    vec2 mouseUv = uMouse / uFboSize;
-    float dist = length(vUv - mouseUv) * length(uFboSize);
-    float k = 1.0 - smoothstep(0.0, uCursorRadius, dist);
-    col += uCursorColor * k * k * uCursorIntensity;
-  }
 
   col *= 1.0 - uResetFlash * 0.7;
 
@@ -320,13 +308,8 @@ uniform float uTime;
 uniform float uCoreLo, uCoreHi, uHaloLo, uHaloHi, uGlowStrength;
 uniform vec3 uBgTop, uBgBot;
 uniform float uNoiseAmp, uNoiseScale, uTintSpeed, uVigAmp;
-uniform vec2 uMouse;
-uniform float uMouseActive, uMousePressed;
-uniform float uCursorRadius, uCursorIntensity;
-uniform vec3 uCursorColor;
 uniform float uResetFlash;
 uniform float uBloomStrength;
-uniform vec2 uFboSize;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 float vnoise(vec2 p) {
@@ -364,13 +347,6 @@ void main() {
   bg = mix(bg, bg * vec3(1.05, 0.98, 0.92), tintCycle * 0.25);
 
   vec3 col = bg + glow;
-
-  if (uMouseActive > 0.5) {
-    vec2 mouseUv = uMouse / uFboSize;
-    float dist = length(vUv - mouseUv) * length(uFboSize);
-    float k = 1.0 - smoothstep(0.0, uCursorRadius, dist);
-    col += uCursorColor * k * k * uCursorIntensity;
-  }
 
   col *= 1.0 - uResetFlash * 0.7;
   col += (hash(gl_FragCoord.xy + fract(uTime)) - 0.5) / 255.0;
@@ -1151,15 +1127,8 @@ void main() {
         noiseScale: gl.getUniformLocation(this.pass2, 'uNoiseScale'),
         tintSpeed: gl.getUniformLocation(this.pass2, 'uTintSpeed'),
         vigAmp: gl.getUniformLocation(this.pass2, 'uVigAmp'),
-        mouse: gl.getUniformLocation(this.pass2, 'uMouse'),
-        mouseActive: gl.getUniformLocation(this.pass2, 'uMouseActive'),
-        mousePressed: gl.getUniformLocation(this.pass2, 'uMousePressed'),
-        cursorRadius: gl.getUniformLocation(this.pass2, 'uCursorRadius'),
-        cursorIntensity: gl.getUniformLocation(this.pass2, 'uCursorIntensity'),
-        cursorColor: gl.getUniformLocation(this.pass2, 'uCursorColor'),
         resetFlash: gl.getUniformLocation(this.pass2, 'uResetFlash'),
         bloomStrength: gl.getUniformLocation(this.pass2, 'uBloomStrength'),
-        fboSize: gl.getUniformLocation(this.pass2, 'uFboSize'),
       };
 
       // Build VAOs / VBOs
@@ -1308,15 +1277,8 @@ void main() {
         noiseScale: gl.getUniformLocation(this.pass2, 'uNoiseScale'),
         tintSpeed: gl.getUniformLocation(this.pass2, 'uTintSpeed'),
         vigAmp: gl.getUniformLocation(this.pass2, 'uVigAmp'),
-        mouse: gl.getUniformLocation(this.pass2, 'uMouse'),
-        mouseActive: gl.getUniformLocation(this.pass2, 'uMouseActive'),
-        mousePressed: gl.getUniformLocation(this.pass2, 'uMousePressed'),
-        cursorRadius: gl.getUniformLocation(this.pass2, 'uCursorRadius'),
-        cursorIntensity: gl.getUniformLocation(this.pass2, 'uCursorIntensity'),
-        cursorColor: gl.getUniformLocation(this.pass2, 'uCursorColor'),
         resetFlash: gl.getUniformLocation(this.pass2, 'uResetFlash'),
         bloomStrength: gl.getUniformLocation(this.pass2, 'uBloomStrength'),
-        fboSize: gl.getUniformLocation(this.pass2, 'uFboSize'),
       };
 
       this._buildBuffers();
@@ -1394,19 +1356,6 @@ void main() {
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_W, TEX_H, gl.RGBA, gl.FLOAT, data);
       gl.bindTexture(gl.TEXTURE_2D, null);
-    }
-    _nearestBlobHue(mx, my) {
-      if (mx < 0 || my < 0) return 0;
-      let bestI = -1, bestD = Infinity;
-      const px = this.blobs.px, py = this.blobs.py, r = this.blobs.r;
-      const N = this.blobs.n;
-      for (let i = 0; i < N; i++) {
-        if (r[i] === 0) continue;
-        const dx = px[i] - mx, dy = py[i] - my;
-        const d2 = dx*dx + dy*dy;
-        if (d2 < bestD) { bestD = d2; bestI = i; }
-      }
-      return bestI < 0 ? 0 : this.blobs.hue[bestI];
     }
     triggerReset() {
       const seed = (Date.now() ^ (Date.now() >>> 16)) >>> 0;
@@ -1752,26 +1701,8 @@ void main() {
       gl.uniform1f(this.loc2.haloLo, HALO_LO);
       gl.uniform1f(this.loc2.haloHi, HALO_HI);
       gl.uniform1f(this.loc2.glow,   GLOW_STRENGTH);
-      gl.uniform2f(this.loc2.mouse, this.mouse.x, this.mouse.y);
-      gl.uniform1f(this.loc2.mouseActive, (this.mouse.x >= 0 && this.mouse.y >= 0) ? 1.0 : 0.0);
-      gl.uniform1f(this.loc2.mousePressed, this.mouse.pressed ? 1.0 : 0.0);
-      const cursorR = this.mouse.pressed ? CURSOR_RADIUS_PRESS_PX : CURSOR_RADIUS_HOVER_PX;
-      const cursorI = this.mouse.pressed ? CURSOR_INTENSITY_PRESS : CURSOR_INTENSITY_HOVER;
-      gl.uniform1f(this.loc2.cursorRadius, cursorR);
-      gl.uniform1f(this.loc2.cursorIntensity, cursorI);
-      // Cursor color: warm white blended toward nearest blob hue
-      const accent = this._nearestBlobHue(this.mouse.x, this.mouse.y);
-      const accentR = 0.5 + 0.5 * Math.cos(accent * 6.28318);
-      const accentG = 0.5 + 0.5 * Math.cos((accent - 0.333) * 6.28318);
-      const accentB = 0.5 + 0.5 * Math.cos((accent - 0.667) * 6.28318);
-      const baseR = 1.00, baseG = 0.96, baseB = 0.86;
-      gl.uniform3f(this.loc2.cursorColor,
-        baseR * (1-CURSOR_ACCENT_BLEND) + accentR * CURSOR_ACCENT_BLEND,
-        baseG * (1-CURSOR_ACCENT_BLEND) + accentG * CURSOR_ACCENT_BLEND,
-        baseB * (1-CURSOR_ACCENT_BLEND) + accentB * CURSOR_ACCENT_BLEND);
       gl.uniform1f(this.loc2.resetFlash, this.resetFlashT > 0 ? this.resetFlashT / (RESET_FLASH_MS/1000) : 0.0);
       gl.uniform1f(this.loc2.bloomStrength, BLOOM_STRENGTH);
-      gl.uniform2f(this.loc2.fboSize, this.fboW, this.fboH);
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.fbo.tex);
