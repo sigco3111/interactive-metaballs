@@ -1,0 +1,2043 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="dark">
+<title>interactive-metaballs</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+    background: #040614;
+    overflow: hidden;
+    overscroll-behavior: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  body { position: fixed; inset: 0; }
+  #gl {
+    display: block;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: crosshair;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #fallback {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    color: #c8c8d4;
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 24px;
+    text-align: center;
+  }
+  #fallback.show { display: flex; }
+  #fallback code {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  noscript {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #c8c8d4;
+    font-size: 14px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* reduced-motion handled in JS, single frame on resize */
+  }
+  #hud {
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    pointer-events: none; user-select: none; -webkit-user-select: none;
+    color: #e8e8f4;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; line-height: 1.55; letter-spacing: 0.02em;
+    padding: 8px 10px;
+    background: rgba(8, 10, 22, 0.62);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+    opacity: 1.0; transition: opacity 200ms ease-out;
+  }
+  #hud.fade { opacity: 0.30; }
+  #hud.hidden { display: none; }
+  #hud .line { display: flex; gap: 8px; align-items: baseline; }
+  #hud .k { color: rgba(232, 232, 244, 0.50); min-width: 38px; }
+  #hud .v { color: #ffffff; font-variant-numeric: tabular-nums; }
+  #hud .hint { margin-top: 2px; color: rgba(232, 232, 244, 0.55); font-size: 10px; }
+  #hud .hint.flash { color: #ffb86b; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="fallback">이 데모는 WebGL과 부동소수점 텍스처를 지원하지 않는 브라우저에서는 동작하지 않습니다.</div>
+<noscript>This demo requires JavaScript.</noscript>
+
+<!-- ============================================================
+     GLSL: Pass 1 — Instanced quads, additive blob accumulation
+     WebGL2 / GLSL ES 3.00
+============================================================ -->
+<script id="vs-pass1" type="x-shader/x-vertex">#version 300 es
+precision highp float;
+uniform mat4 uProj;
+uniform sampler2D uBlobs;
+uniform int uTexW;
+out vec2 vLocal;
+out float vHue;
+void main() {
+  int i = gl_InstanceID;
+  int tx = i - (i / uTexW) * uTexW;
+  int ty = i / uTexW;
+  vec4 b = texelFetch(uBlobs, ivec2(tx, ty), 0);
+  // Branchless corner extraction (avoids vec2[4] constructor driver quirks)
+  vec2 c0 = vec2(-1.0, -1.0);
+  vec2 c1 = vec2( 1.0, -1.0);
+  vec2 c2 = vec2(-1.0,  1.0);
+  vec2 c3 = vec2( 1.0,  1.0);
+  vec2 corner;
+  if (gl_VertexID == 0) corner = c0;
+  else if (gl_VertexID == 1) corner = c1;
+  else if (gl_VertexID == 2) corner = c2;
+  else corner = c3;
+  vLocal = corner;
+  vec2 worldPx = b.xy + corner * b.z;
+  gl_Position = uProj * vec4(worldPx, 0.0, 1.0);
+  vHue = b.w;
+}
+</script>
+
+<script id="fs-pass1" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+in vec2 vLocal;
+in float vHue;
+uniform float uSat;
+uniform float uLit;
+out vec4 outColor;
+
+vec3 hsl2rgb(float h, float s, float l) {
+  h = fract(h);
+  float c = (1.0 - abs(2.0 * l - 1.0)) * s;
+  float hp = h * 6.0;
+  float x = c * (1.0 - abs(mod(hp, 2.0) - 1.0));
+  vec3 rgb;
+  if (hp < 1.0)      rgb = vec3(c, x, 0.0);
+  else if (hp < 2.0) rgb = vec3(x, c, 0.0);
+  else if (hp < 3.0) rgb = vec3(0.0, c, x);
+  else if (hp < 4.0) rgb = vec3(0.0, x, c);
+  else if (hp < 5.0) rgb = vec3(x, 0.0, c);
+  else               rgb = vec3(c, 0.0, x);
+  return rgb + vec3(l - 0.5 * c);
+}
+
+void main() {
+  float d2 = dot(vLocal, vLocal);
+  float w = exp(-d2 * 3.5);
+  if (w < 0.005) discard;
+  vec3 tint = hsl2rgb(vHue, uSat, uLit);
+  // Premultiplied color, weight in alpha -> field-averaged tint after (ONE,ONE) blend
+  outColor = vec4(tint * w, w);
+}
+</script>
+
+<!-- ============================================================
+     GLSL: Pass 2 — Fullscreen quad, threshold + halo + dither
+============================================================ -->
+<script id="vs-pass2" type="x-shader/x-vertex">#version 300 es
+precision highp float;
+out vec2 vUv;
+void main() {
+  vec2 pos = vec2((gl_VertexID == 1) ? 3.0 : -1.0,
+                  (gl_VertexID == 2) ? 3.0 : -1.0);
+  vUv = pos * 0.5 + 0.5;
+  gl_Position = vec4(pos, 0.0, 1.0);
+}
+</script>
+
+<script id="fs-pass2" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+in vec2 vUv;
+uniform sampler2D uFbo;
+uniform sampler2D uBloom;
+uniform float uTime;
+uniform float uCoreLo, uCoreHi, uHaloLo, uHaloHi, uGlowStrength;
+uniform vec3 uBgTop, uBgBot;
+uniform float uNoiseAmp, uNoiseScale, uTintSpeed, uVigAmp;
+uniform vec2 uMouse;
+uniform float uMouseActive, uMousePressed;
+uniform float uCursorRadius, uCursorIntensity;
+uniform vec3 uCursorColor;
+uniform float uResetFlash;
+uniform float uBloomStrength;
+uniform vec2 uFboSize;
+out vec4 outColor;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+  vec2 u = f*f*(3.0-2.0*f);
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { v += a * vnoise(p); p *= 2.03; a *= 0.5; }
+  return v;
+}
+
+void main() {
+  vec4 t = texture(uFbo, vUv);
+  float w = t.a;
+  vec3 c = (w > 1e-3) ? t.rgb / w : vec3(0.0);
+  float core = smoothstep(uCoreLo, uCoreHi, w);
+  float halo = smoothstep(uHaloLo, uHaloHi, w) - core * 0.6;
+  halo = max(halo, 0.0);
+  vec3 glow = c * (core * 1.10 + halo * uGlowStrength);
+
+  vec3 bloom = texture(uBloom, vUv).rgb;
+  glow += bloom * uBloomStrength;
+
+  vec2 q = vUv - 0.5;
+  float r2 = dot(q, q);
+  float vig = 1.0 - r2 * uVigAmp;
+  vec3 bg = mix(uBgBot, uBgTop, vig);
+  float n = fbm(vUv * uNoiseScale + uTime * uTintSpeed);
+  bg += (n - 0.5) * uNoiseAmp;
+  float tintCycle = 0.5 + 0.5 * sin(uTime * uTintSpeed * 6.28318);
+  bg = mix(bg, bg * vec3(1.05, 0.98, 0.92), tintCycle * 0.25);
+
+  vec3 col = bg + glow;
+
+  if (uMouseActive > 0.5) {
+    vec2 mouseUv = uMouse / uFboSize;
+    float dist = length(vUv - mouseUv) * length(uFboSize);
+    float k = 1.0 - smoothstep(0.0, uCursorRadius, dist);
+    col += uCursorColor * k * k * uCursorIntensity;
+  }
+
+  col *= 1.0 - uResetFlash * 0.7;
+
+  col += (hash(gl_FragCoord.xy + fract(uTime)) - 0.5) / 255.0;
+  outColor = vec4(col, 1.0);
+}
+</script>
+
+<!-- ============================================================
+     GLSL: WebGL1 fallback shaders (ANGLE_instanced_arrays)
+============================================================ -->
+<script id="vs-pass1-wgl1" type="x-shader/x-vertex">attribute vec2 aCorner;
+attribute float aInstanceId;
+uniform mat4 uProj;
+uniform sampler2D uBlobs;
+uniform float uTexW;
+varying vec2 vLocal;
+varying float vHue;
+
+vec3 hsl2rgb(float h, float s, float l) {
+  h = fract(h);
+  float c = (1.0 - abs(2.0 * l - 1.0)) * s;
+  float hp = h * 6.0;
+  float x = c * (1.0 - abs(mod(hp, 2.0) - 1.0));
+  vec3 rgb;
+  if (hp < 1.0)      rgb = vec3(c, x, 0.0);
+  else if (hp < 2.0) rgb = vec3(x, c, 0.0);
+  else if (hp < 3.0) rgb = vec3(0.0, c, x);
+  else if (hp < 4.0) rgb = vec3(0.0, x, c);
+  else if (hp < 5.0) rgb = vec3(x, 0.0, c);
+  else               rgb = vec3(c, 0.0, x);
+  return rgb + vec3(l - 0.5 * c);
+}
+
+void main() {
+  int i = int(aInstanceId);
+  vec4 b = texture2D(uBlobs, vec2((float(i) + 0.5) / uTexW, 0.5));
+  vLocal = aCorner;
+  vec2 worldPx = b.xy + aCorner * b.z;
+  gl_Position = uProj * vec4(worldPx, 0.0, 1.0);
+  vHue = b.w;
+}
+</script>
+
+<script id="fs-pass1-wgl1" type="x-shader/x-fragment">precision mediump float;
+varying vec2 vLocal;
+varying float vHue;
+uniform float uSat;
+uniform float uLit;
+
+vec3 hsl2rgb(float h, float s, float l) {
+  h = fract(h);
+  float c = (1.0 - abs(2.0 * l - 1.0)) * s;
+  float hp = h * 6.0;
+  float x = c * (1.0 - abs(mod(hp, 2.0) - 1.0));
+  vec3 rgb;
+  if (hp < 1.0)      rgb = vec3(c, x, 0.0);
+  else if (hp < 2.0) rgb = vec3(x, c, 0.0);
+  else if (hp < 3.0) rgb = vec3(0.0, c, x);
+  else if (hp < 4.0) rgb = vec3(0.0, x, c);
+  else if (hp < 5.0) rgb = vec3(x, 0.0, c);
+  else               rgb = vec3(c, 0.0, x);
+  return rgb + vec3(l - 0.5 * c);
+}
+
+void main() {
+  float d2 = dot(vLocal, vLocal);
+  float w = exp(-d2 * 3.5);
+  if (w < 0.005) discard;
+  vec3 tint = hsl2rgb(vHue, uSat, uLit);
+  gl_FragColor = vec4(tint * w, w);
+}
+</script>
+
+<script id="vs-pass2-wgl1" type="x-shader/x-vertex">attribute vec2 aPos;
+varying vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+</script>
+
+<script id="fs-pass2-wgl1" type="x-shader/x-fragment">precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uFbo;
+uniform sampler2D uBloom;
+uniform float uTime;
+uniform float uCoreLo, uCoreHi, uHaloLo, uHaloHi, uGlowStrength;
+uniform vec3 uBgTop, uBgBot;
+uniform float uNoiseAmp, uNoiseScale, uTintSpeed, uVigAmp;
+uniform vec2 uMouse;
+uniform float uMouseActive, uMousePressed;
+uniform float uCursorRadius, uCursorIntensity;
+uniform vec3 uCursorColor;
+uniform float uResetFlash;
+uniform float uBloomStrength;
+uniform vec2 uFboSize;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+  vec2 u = f*f*(3.0-2.0*f);
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { v += a * vnoise(p); p *= 2.03; a *= 0.5; }
+  return v;
+}
+
+void main() {
+  vec4 t = texture2D(uFbo, vUv);
+  float w = t.a;
+  vec3 c = (w > 1e-3) ? t.rgb / w : vec3(0.0);
+  float core = smoothstep(uCoreLo, uCoreHi, w);
+  float halo = smoothstep(uHaloLo, uHaloHi, w) - core * 0.6;
+  halo = max(halo, 0.0);
+  vec3 glow = c * (core * 1.10 + halo * uGlowStrength);
+
+  vec3 bloom = texture2D(uBloom, vUv).rgb;
+  glow += bloom * uBloomStrength;
+
+  vec2 q = vUv - 0.5;
+  float r2 = dot(q, q);
+  float vig = 1.0 - r2 * uVigAmp;
+  vec3 bg = mix(uBgBot, uBgTop, vig);
+  float n = fbm(vUv * uNoiseScale + uTime * uTintSpeed);
+  bg += (n - 0.5) * uNoiseAmp;
+  float tintCycle = 0.5 + 0.5 * sin(uTime * uTintSpeed * 6.28318);
+  bg = mix(bg, bg * vec3(1.05, 0.98, 0.92), tintCycle * 0.25);
+
+  vec3 col = bg + glow;
+
+  if (uMouseActive > 0.5) {
+    vec2 mouseUv = uMouse / uFboSize;
+    float dist = length(vUv - mouseUv) * length(uFboSize);
+    float k = 1.0 - smoothstep(0.0, uCursorRadius, dist);
+    col += uCursorColor * k * k * uCursorIntensity;
+  }
+
+  col *= 1.0 - uResetFlash * 0.7;
+  col += (hash(gl_FragCoord.xy + fract(uTime)) - 0.5) / 255.0;
+  gl_FragColor = vec4(col, 1.0);
+}
+</script>
+
+<!-- ============================================================
+     GLSL: Bloom pipeline (DOWN threshold/box + H/V Gaussian blur)
+     WebGL2 / GLSL ES 3.00
+============================================================ -->
+<script id="vs-bloom" type="x-shader/x-vertex">#version 300 es
+precision highp float;
+out vec2 vUv;
+void main() {
+  vec2 pos = vec2((gl_VertexID == 1) ? 3.0 : -1.0,
+                  (gl_VertexID == 2) ? 3.0 : -1.0);
+  vUv = pos * 0.5 + 0.5;
+  gl_Position = vec4(pos, 0.0, 1.0);
+}
+</script>
+
+<script id="fs-bloom-down" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+in vec2 vUv;
+uniform sampler2D uSrc;
+uniform vec2 uSrcSize;
+uniform float uThreshold;
+out vec4 outColor;
+void main() {
+  vec2 px = 1.0 / uSrcSize;
+  vec4 c0 = texture(uSrc, vUv + vec2(-0.5, -0.5) * px);
+  vec4 c1 = texture(uSrc, vUv + vec2( 0.5, -0.5) * px);
+  vec4 c2 = texture(uSrc, vUv + vec2(-0.5,  0.5) * px);
+  vec4 c3 = texture(uSrc, vUv + vec2( 0.5,  0.5) * px);
+  vec4 avg = 0.25 * (c0 + c1 + c2 + c3);
+  float lum = avg.a;
+  float k = smoothstep(uThreshold, uThreshold + 0.10, lum);
+  outColor = vec4(avg.rgb * k, avg.a * k);
+}
+</script>
+
+<script id="fs-bloom-h" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+in vec2 vUv;
+uniform sampler2D uSrc;
+uniform vec2 uTexel;
+uniform float uRadius;
+out vec4 outColor;
+void main() {
+  vec2 off1 = vec2(1.3846153846 * uRadius, 0.0) * uTexel;
+  vec2 off2 = vec2(3.2307692308 * uRadius, 0.0) * uTexel;
+  vec3 c = texture(uSrc, vUv).rgb * 0.2270270270;
+  c += texture(uSrc, vUv + off1).rgb * 0.3162162162;
+  c += texture(uSrc, vUv - off1).rgb * 0.3162162162;
+  c += texture(uSrc, vUv + off2).rgb * 0.0702702703;
+  c += texture(uSrc, vUv - off2).rgb * 0.0702702703;
+  outColor = vec4(c, 1.0);
+}
+</script>
+
+<script id="fs-bloom-v" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+in vec2 vUv;
+uniform sampler2D uSrc;
+uniform vec2 uTexel;
+uniform float uRadius;
+out vec4 outColor;
+void main() {
+  vec2 off1 = vec2(0.0, 1.3846153846 * uRadius) * uTexel;
+  vec2 off2 = vec2(0.0, 3.2307692308 * uRadius) * uTexel;
+  vec3 c = texture(uSrc, vUv).rgb * 0.2270270270;
+  c += texture(uSrc, vUv + off1).rgb * 0.3162162162;
+  c += texture(uSrc, vUv - off1).rgb * 0.3162162162;
+  c += texture(uSrc, vUv + off2).rgb * 0.0702702703;
+  c += texture(uSrc, vUv - off2).rgb * 0.0702702703;
+  outColor = vec4(c, 1.0);
+}
+</script>
+
+<!-- ============================================================
+     GLSL: WebGL1 bloom fallbacks (aPos attribute-based)
+============================================================ -->
+<script id="vs-bloom-wgl1" type="x-shader/x-vertex">attribute vec2 aPos;
+varying vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}
+</script>
+
+<script id="fs-bloom-down-wgl1" type="x-shader/x-fragment">precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uSrc;
+uniform vec2 uSrcSize;
+uniform float uThreshold;
+void main() {
+  vec2 px = 1.0 / uSrcSize;
+  vec4 c0 = texture2D(uSrc, vUv + vec2(-0.5, -0.5) * px);
+  vec4 c1 = texture2D(uSrc, vUv + vec2( 0.5, -0.5) * px);
+  vec4 c2 = texture2D(uSrc, vUv + vec2(-0.5,  0.5) * px);
+  vec4 c3 = texture2D(uSrc, vUv + vec2( 0.5,  0.5) * px);
+  vec4 avg = 0.25 * (c0 + c1 + c2 + c3);
+  float lum = avg.a;
+  float k = smoothstep(uThreshold, uThreshold + 0.10, lum);
+  gl_FragColor = vec4(avg.rgb * k, avg.a * k);
+}
+</script>
+
+<script id="fs-bloom-h-wgl1" type="x-shader/x-fragment">precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uSrc;
+uniform vec2 uTexel;
+uniform float uRadius;
+void main() {
+  vec2 off1 = vec2(1.3846153846 * uRadius, 0.0) * uTexel;
+  vec2 off2 = vec2(3.2307692308 * uRadius, 0.0) * uTexel;
+  vec3 c = texture2D(uSrc, vUv).rgb * 0.2270270270;
+  c += texture2D(uSrc, vUv + off1).rgb * 0.3162162162;
+  c += texture2D(uSrc, vUv - off1).rgb * 0.3162162162;
+  c += texture2D(uSrc, vUv + off2).rgb * 0.0702702703;
+  c += texture2D(uSrc, vUv - off2).rgb * 0.0702702703;
+  gl_FragColor = vec4(c, 1.0);
+}
+</script>
+
+<script id="fs-bloom-v-wgl1" type="x-shader/x-fragment">precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uSrc;
+uniform vec2 uTexel;
+uniform float uRadius;
+void main() {
+  vec2 off1 = vec2(0.0, 1.3846153846 * uRadius) * uTexel;
+  vec2 off2 = vec2(0.0, 3.2307692308 * uRadius) * uTexel;
+  vec3 c = texture2D(uSrc, vUv).rgb * 0.2270270270;
+  c += texture2D(uSrc, vUv + off1).rgb * 0.3162162162;
+  c += texture2D(uSrc, vUv - off1).rgb * 0.3162162162;
+  c += texture2D(uSrc, vUv + off2).rgb * 0.0702702703;
+  c += texture2D(uSrc, vUv - off2).rgb * 0.0702702703;
+  gl_FragColor = vec4(c, 1.0);
+}
+</script>
+
+<!-- ============================================================
+     Main module
+============================================================ -->
+<script>
+(function () {
+  'use strict';
+
+  // ===== S1 Constants =====
+  const VERSION = '1.0.0';
+  const SEED = 0xC0FFEE;
+  const INITIAL_N = 240;
+  const MAX_N = 400;
+  const MIN_N = 60;
+
+  // Physics tuning (CSS px / s or px / s^2)
+  const BROWNIAN_ACCEL    = 90;    // px/s^2 random kick (gives ~10 px/s drift)
+  const ATTRACT_PEAK      = 220;   // px/s^2 toward cursor
+  const WHIRL_PEAK        = 380;   // px/s^2 tangential CCW
+  const ATTRACT_R_FACTOR  = 0.30;  // fraction of min(w,h)
+  const WHIRL_R_FACTOR    = 0.22;  // fraction of min(w,h)
+  const BOUNDARY_MARGIN   = 0.08;  // fraction of w or h
+  const BOUNDARY_PUSH     = 60;    // px/s^2
+  const VMAX              = 600;   // px/s clamp
+  const DAMP_60HZ         = 0.985; // per-frame damping at 60fps
+  const IDLE_MS           = 150;
+  const IDLE_FACTOR       = 0.15;
+  const DT_CLAMP          = 1 / 30;
+  const R_MIN             = 12;
+  const R_MAX             = 48;
+
+  // Visual
+  const CORE_LO       = 0.30;
+  const CORE_HI       = 0.55;
+  const HALO_LO       = 0.04;
+  const HALO_HI       = 0.30;
+  const GLOW_STRENGTH = 1.40;
+  const FALLOFF       = 2.2;
+  const BG_R          = 0.015;
+  const BG_G          = 0.030;
+  const BG_B          = 0.075;
+
+  // Performance
+  const TARGET_DPR    = 1.5;
+  const MAX_DPR       = 2.0;
+  const MIN_DPR       = 0.75;
+  const FPS_WINDOW    = 1.0;
+  const SLOW_FPS      = 30;
+  const FAST_FPS      = 55;
+  const REDUCE_FACTOR = 0.80;
+  const GROW_FACTOR   = 1.10;
+
+  // === Bloom ===
+  const BLOOM_ENABLED      = true;
+  const BLOOM_STRENGTH     = 0.60;
+  const BLOOM_THRESHOLD    = 0.18;
+  const BLOOM_RADIUS_PX    = 6;
+  const BLOOM_DOWN_DIVISOR = 2;
+
+  // === Atmospheric background ===
+  const BG_TOP_R = 0.030, BG_TOP_G = 0.062, BG_TOP_B = 0.150;
+  const BG_BOT_R = 0.004, BG_BOT_G = 0.010, BG_BOT_B = 0.028;
+  const BG_NOISE_AMP = 0.045;
+  const BG_NOISE_SCALE = 2.5;
+  const BG_TINT_SPEED = 0.08;
+  const BG_VIG_AMP = 1.10;
+
+  // === Cursor glow ===
+  const CURSOR_RADIUS_HOVER_PX = 38;
+  const CURSOR_RADIUS_PRESS_PX = 78;
+  const CURSOR_INTENSITY_HOVER = 0.70;
+  const CURSOR_INTENSITY_PRESS = 1.50;
+  const CURSOR_ACCENT_BLEND = 0.35;
+
+  // === HUD ===
+  const HUD_IDLE_HIDE_MS = 4000;
+  const HUD_LINE_HINT = 'drag · click · R · H';
+
+  // === Click-spawn ===
+  const SPAWN_VEL_PX = 80;
+  const SPAWN_HUE_STEP = 0.137;
+  const SPAWN_FLASH_MS = 400;
+
+  // === Reset ===
+  const RESET_FLASH_MS = 220;
+  const RESET_FLASH_DEPTH = 0.70;
+
+  // Data texture (1D row of N blobs). NPOT is safe here because we use
+  // NEAREST filtering + CLAMP_TO_EDGE wrapping (no mipmapping, no repeat).
+  const TEX_W = MAX_N;
+  const TEX_H = 1;
+
+  // ===== S2 Utilities =====
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Sample gaussian via Box-Muller (used for radius distribution)
+  function gauss(rng) {
+    let u = 0, v = 0;
+    while (u === 0) u = rng();
+    while (v === 0) v = rng();
+    return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+  }
+
+  function logNormalRadius(rng) {
+    // Lognormal distribution centered around (R_MIN+R_MAX)/2
+    const mu = Math.log((R_MIN + R_MAX) * 0.5);
+    const sigma = 0.45;
+    let r = Math.exp(mu + sigma * gauss(rng));
+    if (r < R_MIN) r = R_MIN;
+    if (r > R_MAX) r = R_MAX;
+    return r;
+  }
+
+  // Float32 -> Float16 (Uint16 bit pattern)
+  const f32_to_f16_buf = new ArrayBuffer(4);
+  const f32_to_f16_f32 = new Float32Array(f32_to_f16_buf);
+  const f32_to_f16_u32 = new Uint32Array(f32_to_f16_buf);
+  const f32_to_f16_u16 = new Uint16Array(f32_to_f16_buf);
+  function f32_to_f16(val) {
+    f32_to_f16_f32[0] = val;
+    const x = f32_to_f16_u32[0];
+    const sign = (x >>> 16) & 0x8000;
+    let exp = ((x >>> 23) & 0xff) - 127 + 15;
+    let frac = x & 0x7fffff;
+    if (exp <= 0) {
+      if (exp < -10) return sign;
+      frac = (frac | 0x800000) >> (1 - exp);
+      return sign | ((frac + 0x1000) >> 13);
+    }
+    if (exp >= 31) return sign | 0x7c00;
+    return sign | (exp << 10) | ((frac + 0x1000) >> 13);
+  }
+
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  // 4x4 ortho for CSS px coords (y-down canvas convention)
+  function mat4Ortho(l, r, b, t, n, f) {
+    return new Float32Array([
+      2 / (r - l), 0, 0, 0,
+      0, 2 / (t - b), 0, 0,
+      0, 0, -2 / (f - n), 0,
+      -(r + l) / (r - l), -(t + b) / (t - b), -(f + n) / (f - n), 1
+    ]);
+  }
+
+  // ===== S3 WebGL helpers =====
+  function getGL(canvas) {
+    const attrs = {
+      alpha: false,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
+      powerPreference: 'high-performance',
+      failIfMajorPerformanceCaveat: false
+    };
+    let gl = null;
+    let version = 0;
+    let floatType = null;
+    let instancing = false;
+    try {
+      gl = canvas.getContext('webgl2', attrs);
+    } catch (e) { gl = null; }
+    if (gl) {
+      version = 2;
+      instancing = true;
+      const ext32 = gl.getExtension('EXT_color_buffer_float');
+      if (ext32) floatType = 'f32';
+      else {
+        const ext16 = gl.getExtension('EXT_color_buffer_half_float');
+        floatType = ext16 ? 'f16' : 'u8';
+      }
+    } else {
+      try {
+        gl = canvas.getContext('webgl', attrs) || canvas.getContext('experimental-webgl', attrs);
+      } catch (e) { gl = null; }
+      if (gl) {
+        version = 1;
+        instancing = !!gl.getExtension('ANGLE_instanced_arrays');
+        // WebGL1 needs explicit float texture extensions for data, but we use u8 fallback
+        if (gl.getExtension('OES_texture_half_float') && gl.getExtension('EXT_color_buffer_half_float')) {
+          floatType = 'f16';
+        } else {
+          floatType = 'u8';
+        }
+      }
+    }
+    return { gl, version, floatType, instancing };
+  }
+
+  function compileShader(gl, type, source) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, source);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      const log = gl.getShaderInfoLog(sh);
+      gl.deleteShader(sh);
+      throw new Error('Shader compile failed: ' + log);
+    }
+    return sh;
+  }
+
+  function linkProgram(gl, vsSource, fsSource) {
+    const vs = compileShader(gl, gl.VERTEX_SHADER, vsSource);
+    const fs = compileShader(gl, gl.FRAGMENT_SHADER, fsSource);
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      const log = gl.getProgramInfoLog(prog);
+      gl.deleteProgram(prog);
+      throw new Error('Program link failed: ' + log);
+    }
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return prog;
+  }
+
+  // Choose FBO internal format based on floatType
+  function fboFormat(gl, floatType) {
+    if (floatType === 'f32') {
+      return { internal: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT };
+    }
+    if (floatType === 'f16') {
+      return { internal: gl.RGBA16F, format: gl.RGBA, type: gl.HALF_FLOAT };
+    }
+    // u8 fallback: clamp weight via reduced per-blob intensity
+    return { internal: gl.RGBA, format: gl.RGBA, type: gl.UNSIGNED_BYTE };
+  }
+
+  // Data texture format for blob storage
+  function blobTexFormat(gl, version, floatType) {
+    if (floatType === 'f32' && version === 2) {
+      return { internal: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT, pack: 'f32' };
+    }
+    if (floatType === 'f16' && version >= 2) {
+      return { internal: gl.RGBA16F, format: gl.RGBA, type: gl.HALF_FLOAT, pack: 'f16' };
+    }
+    if (floatType === 'f16' && version === 1) {
+      // WebGL1 OES_texture_half_float uses HALF_FLOAT_OES
+      return { internal: gl.RGBA, format: gl.RGBA, type: 0x8D61 /* HALF_FLOAT_OES */, pack: 'f16' };
+    }
+    // u8 fallback
+    return { internal: gl.RGBA, format: gl.RGBA, type: gl.UNSIGNED_BYTE, pack: 'u8' };
+  }
+
+  function createFBO(gl, w, h, fmt) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, fmt.internal, w, h, 0, fmt.format, fmt.type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error('FBO incomplete: 0x' + status.toString(16));
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, w, h };
+  }
+
+  function createDataTexture(gl, fmt) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, fmt.internal, TEX_W, TEX_H, 0, fmt.format, fmt.type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
+  function createBlurFBO(gl, w, h) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error('Blur FBO incomplete: 0x' + status.toString(16));
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, w, h };
+  }
+
+  function createDownsampleFBO(gl, w, h, fmt) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, fmt.internal, w, h, 0, fmt.format, fmt.type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, w, h };
+  }
+
+  // ===== S4 Blob state (Structure of Arrays) =====
+  class BlobSet {
+    constructor() {
+      this.maxN = MAX_N;
+      this.n = INITIAL_N;
+      this.px  = new Float32Array(this.maxN);
+      this.py  = new Float32Array(this.maxN);
+      this.vx  = new Float32Array(this.maxN);
+      this.vy  = new Float32Array(this.maxN);
+      this.r   = new Float32Array(this.maxN);
+      this.hue = new Float32Array(this.maxN);
+      this.sat = new Float32Array(this.maxN);
+      this.lit = new Float32Array(this.maxN);
+      this.velMag = new Float32Array(this.maxN);
+      this.spawnIdx = 0;
+      this.spawnHueCursor = 0;
+    }
+    init(seed, w, h) {
+      const rng = mulberry32(seed);
+      for (let i = 0; i < this.maxN; i++) {
+        this.px[i] = rng() * w;
+        this.py[i] = rng() * h;
+        this.vx[i] = (rng() * 2 - 1) * 15;
+        this.vy[i] = (rng() * 2 - 1) * 15;
+        this.r[i]  = logNormalRadius(rng);
+        // Hue biased toward magenta -> orange (0.55 .. 1.05 mod 1)
+        this.hue[i] = (rng() * 0.5 + 0.55) % 1.0;
+        this.sat[i] = 0.85 + rng() * 0.15;
+        this.lit[i] = 0.55 + rng() * 0.10;
+        this.velMag[i] = 0;
+      }
+      this.spawnHueCursor = 0;
+    }
+    pickSpawnSlot() {
+      for (let i = 0; i < this.maxN; i++) {
+        if (this.r[i] === 0) return i;
+      }
+      const i = this.spawnIdx % this.maxN;
+      this.spawnIdx = (this.spawnIdx + 1) % this.maxN;
+      return i;
+    }
+    spawn(x, y, rng) {
+      const i = this.pickSpawnSlot();
+      const angle = rng() * Math.PI * 2;
+      const speed = SPAWN_VEL_PX;
+      this.px[i] = x;
+      this.py[i] = y;
+      this.vx[i] = Math.cos(angle) * speed;
+      this.vy[i] = Math.sin(angle) * speed;
+      this.r[i]  = R_MIN + rng() * (R_MAX - R_MIN);
+      this.hue[i] = this.spawnHueCursor;
+      this.spawnHueCursor = (this.spawnHueCursor + SPAWN_HUE_STEP) % 1.0;
+      this.sat[i] = 0.85 + rng() * 0.15;
+      this.lit[i] = 0.55 + rng() * 0.10;
+      this.velMag[i] = speed;
+      if (this.n < this.maxN) this.n++;
+      return i;
+    }
+    reset(seed, w, h) {
+      this.init(seed, w, h);
+      this.spawnIdx = 0;
+      this.spawnHueCursor = 0;
+    }
+    packVel(outF32) {
+      const N = this.maxN;
+      for (let i = 0; i < N; i++) {
+        const j = i * 4;
+        outF32[j]     = this.velMag[i];
+        outF32[j + 1] = 0;
+        outF32[j + 2] = 0;
+        outF32[j + 3] = 1;
+      }
+      return outF32;
+    }
+    pack(data, packMode) {
+      // data: Float32Array of length maxN*4 (RGBA per blob)
+      const N = this.maxN;
+      if (packMode === 'f32') {
+        for (let i = 0; i < N; i++) {
+          const j = i * 4;
+          data[j]     = this.px[i];
+          data[j + 1] = this.py[i];
+          data[j + 2] = this.r[i];
+          data[j + 3] = this.hue[i];
+        }
+        return data;
+      }
+      if (packMode === 'f16') {
+        const out = new Uint16Array(N * 4);
+        for (let i = 0; i < N; i++) {
+          const j = i * 4;
+          out[j]     = f32_to_f16(this.px[i]);
+          out[j + 1] = f32_to_f16(this.py[i]);
+          out[j + 2] = f32_to_f16(this.r[i]);
+          out[j + 3] = f32_to_f16(this.hue[i]);
+        }
+        return out;
+      }
+      // u8: pack into UNSIGNED_BYTE
+      // CSS px up to ~8000 fits in u8 if we scale by /32 (then ranges 0..250)
+      // Radius up to 48 fits at /0.25 (range 0..192)
+      // Hue 0..1 -> 0..255
+      const out = new Uint8Array(N * 4);
+      for (let i = 0; i < N; i++) {
+        const j = i * 4;
+        out[j]     = clamp(this.px[i] / 32, 0, 255) | 0;
+        out[j + 1] = clamp(this.py[i] / 32, 0, 255) | 0;
+        out[j + 2] = clamp(this.r[i] * 4,    0, 255) | 0;
+        out[j + 3] = clamp(this.hue[i] * 255, 0, 255) | 0;
+      }
+      return out;
+    }
+  }
+
+  // ===== S5 Mouse / pointer state =====
+  class Mouse {
+    constructor() {
+      this.x = -1;
+      this.y = -1;
+      this.pressed = false;
+      this.button = -1;
+      this.lastMoveT = -Infinity;
+      this.lastClickT = -Infinity;
+      this.lastResetT = -Infinity;
+      this.idle = true;
+    }
+    attach(canvas) {
+      const toCanvas = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        return {
+          x: (e.clientX - rect.left) * (rect.width > 0 ? canvas.clientWidth / rect.width : 1),
+          y: (e.clientY - rect.top)  * (rect.height > 0 ? canvas.clientHeight / rect.height : 1)
+        };
+      };
+      const onMove = (e) => {
+        const p = toCanvas(e);
+        this.x = p.x;
+        this.y = p.y;
+        this.lastMoveT = performance.now();
+        this.idle = false;
+      };
+      const onDown = (e) => {
+        canvas.setPointerCapture(e.pointerId);
+        const p = toCanvas(e);
+        this.x = p.x;
+        this.y = p.y;
+        this.button = e.button;
+        this.pressed = (e.button === 0);
+        this.lastMoveT = performance.now();
+        this.idle = false;
+      };
+      const onUp = (e) => {
+        try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+        this.pressed = false;
+      };
+      const onLeave = () => {
+        this.pressed = false;
+        this.button = -1;
+        this.x = -1;
+        this.y = -1;
+      };
+      canvas.addEventListener('pointermove', onMove, { passive: true });
+      canvas.addEventListener('pointerdown', onDown, { passive: true });
+      canvas.addEventListener('pointerup',   onUp,   { passive: true });
+      canvas.addEventListener('pointercancel', onLeave, { passive: true });
+      canvas.addEventListener('pointerleave',  onLeave, { passive: true });
+    }
+  }
+
+  // ===== S6 Resize / DPR =====
+  function computeSize(canvas) {
+    const cssW = Math.max(1, canvas.clientWidth);
+    const cssH = Math.max(1, canvas.clientHeight);
+    return { cssW, cssH };
+  }
+
+  // ===== S7 App =====
+  class App {
+    constructor(canvas, mouse, reducedMotion) {
+      this.canvas = canvas;
+      this.mouse = mouse;
+      this.reducedMotion = reducedMotion;
+      this.gl = null;
+      this.version = 0;
+      this.floatType = 'u8';
+      this.instancing = false;
+
+      this.pass1 = null;
+      this.pass2 = null;
+      this.fbo = null;
+      this.blobTex = null;
+      this.fmtFBO = null;
+      this.fmtBlob = null;
+      this.uPacked = null;
+      this.scaleMode = null; // 'f32' | 'f16' | 'u8'
+
+      this.loc1 = null;
+      this.loc2 = null;
+      this.vao1 = null; // WebGL2
+      this.vao2 = null;
+      this.vboQuad = null;
+      this.vboCorner = null;
+      this.vboInstId = null;
+      this.vboPass2 = null;
+
+      this.proj = new Float32Array(16);
+      this.cssW = 1;
+      this.cssH = 1;
+      this.fboW = 1;
+      this.fboH = 1;
+
+      this.blobs = new BlobSet();
+
+      this.lastT = 0;
+      this.rafId = 0;
+      this.running = false;
+      this.contextLost = false;
+
+      // FPS rolling window
+      this.fpsFrames = 0;
+      this.fpsAccum = 0;
+      this.fpsAvg = 60;
+      this.fpsWindowStart = 0;
+      this.slowSince = -1;
+
+      this.dpr = TARGET_DPR;
+
+      // Pre-allocated data buffers
+      this.packedF32 = new Float32Array(this.blobs.maxN * 4);
+
+      this.time = 0;
+
+      // Bloom pipeline state
+      this.passBloomDown = null;
+      this.passBloomH = null;
+      this.passBloomV = null;
+      this.fboBloomDown = null;
+      this.fboBloomH = null;
+      this.fboBloomV = null;
+      this.locBloomDown = null;
+      this.locBloomH = null;
+      this.locBloomV = null;
+      this.bloomDownW = 1; this.bloomDownH = 1;
+      this.bloomBlurW = 1; this.bloomBlurH = 1;
+
+      // Velocity texture (NEAREST RGBA32F; alpha=1 always)
+      this.velTex = null;
+      this.packedVelF32 = new Float32Array(this.blobs.maxN * 4);
+
+      // Cursor / atmospheric / reset / spawn state
+      this.cursorHue = 0;
+      this.resetFlashT = 0;
+      this.spawnFlashT = 0;
+      this.hudEl = null;
+      this.hudFpsEl = null;
+      this.hudCountEl = null;
+      this.hudHintEl = null;
+      this.hudHidden = false;
+      this.hudFadeOut = false;
+    }
+
+    init() {
+      const { gl, version, floatType, instancing } = getGL(this.canvas);
+      if (!gl) {
+        document.getElementById('fallback').classList.add('show');
+        throw new Error('WebGL not available');
+      }
+      this.gl = gl;
+      this.version = version;
+      this.floatType = floatType;
+      this.instancing = instancing;
+
+      this.fmtFBO  = fboFormat(gl, floatType);
+      this.fmtBlob = blobTexFormat(gl, version, floatType);
+      this.scaleMode = (floatType === 'u8') ? 'u8' : this.fmtBlob.pack;
+
+      // Build programs (shader source differs by version)
+      const vs1 = (version === 2)
+        ? document.getElementById('vs-pass1').textContent
+        : document.getElementById('vs-pass1-wgl1').textContent;
+      const fs1 = (version === 2)
+        ? document.getElementById('fs-pass1').textContent
+        : document.getElementById('fs-pass1-wgl1').textContent;
+      const vs2 = (version === 2)
+        ? document.getElementById('vs-pass2').textContent
+        : document.getElementById('vs-pass2-wgl1').textContent;
+      const fs2 = (version === 2)
+        ? document.getElementById('fs-pass2').textContent
+        : document.getElementById('fs-pass2-wgl1').textContent;
+
+      this.pass1 = linkProgram(gl, vs1, fs1);
+      this.pass2 = linkProgram(gl, vs2, fs2);
+
+      // Cache uniform locations
+      this.loc1 = {
+        proj: gl.getUniformLocation(this.pass1, 'uProj'),
+        blobs: gl.getUniformLocation(this.pass1, 'uBlobs'),
+        texW: gl.getUniformLocation(this.pass1, 'uTexW'),
+        sat:  gl.getUniformLocation(this.pass1, 'uSat'),
+        lit:  gl.getUniformLocation(this.pass1, 'uLit')
+      };
+      this.loc2 = {
+        fbo:  gl.getUniformLocation(this.pass2, 'uFbo'),
+        bloom: gl.getUniformLocation(this.pass2, 'uBloom'),
+        time: gl.getUniformLocation(this.pass2, 'uTime'),
+        coreLo: gl.getUniformLocation(this.pass2, 'uCoreLo'),
+        coreHi: gl.getUniformLocation(this.pass2, 'uCoreHi'),
+        haloLo: gl.getUniformLocation(this.pass2, 'uHaloLo'),
+        haloHi: gl.getUniformLocation(this.pass2, 'uHaloHi'),
+        glow:   gl.getUniformLocation(this.pass2, 'uGlowStrength'),
+        bgTop: gl.getUniformLocation(this.pass2, 'uBgTop'),
+        bgBot: gl.getUniformLocation(this.pass2, 'uBgBot'),
+        noiseAmp: gl.getUniformLocation(this.pass2, 'uNoiseAmp'),
+        noiseScale: gl.getUniformLocation(this.pass2, 'uNoiseScale'),
+        tintSpeed: gl.getUniformLocation(this.pass2, 'uTintSpeed'),
+        vigAmp: gl.getUniformLocation(this.pass2, 'uVigAmp'),
+        mouse: gl.getUniformLocation(this.pass2, 'uMouse'),
+        mouseActive: gl.getUniformLocation(this.pass2, 'uMouseActive'),
+        mousePressed: gl.getUniformLocation(this.pass2, 'uMousePressed'),
+        cursorRadius: gl.getUniformLocation(this.pass2, 'uCursorRadius'),
+        cursorIntensity: gl.getUniformLocation(this.pass2, 'uCursorIntensity'),
+        cursorColor: gl.getUniformLocation(this.pass2, 'uCursorColor'),
+        resetFlash: gl.getUniformLocation(this.pass2, 'uResetFlash'),
+        bloomStrength: gl.getUniformLocation(this.pass2, 'uBloomStrength'),
+        fboSize: gl.getUniformLocation(this.pass2, 'uFboSize'),
+      };
+
+      // Build VAOs / VBOs
+      this._buildBuffers();
+
+      // Velocity data texture (same format as blobTex)
+      this.velTex = createDataTexture(gl, this.fmtBlob);
+
+      // Data texture
+      this.blobTex = createDataTexture(gl, this.fmtBlob);
+
+      // Link bloom programs (DOWN threshold/box + H/V Gaussian blur)
+      const linkPair = (vsId, fsId, vsId1, fsId1) => {
+        const vsSrc = (this.version === 2) ? document.getElementById(vsId).textContent : document.getElementById(vsId1).textContent;
+        const fsSrc = (this.version === 2) ? document.getElementById(fsId).textContent : document.getElementById(fsId1).textContent;
+        return linkProgram(gl, vsSrc, fsSrc);
+      };
+      this.passBloomDown = linkPair('vs-bloom', 'fs-bloom-down', 'vs-bloom-wgl1', 'fs-bloom-down-wgl1');
+      this.passBloomH    = linkPair('vs-bloom', 'fs-bloom-h',    'vs-bloom-wgl1', 'fs-bloom-h-wgl1');
+      this.passBloomV    = linkPair('vs-bloom', 'fs-bloom-v',    'vs-bloom-wgl1', 'fs-bloom-v-wgl1');
+      this.locBloomDown = {
+        src: gl.getUniformLocation(this.passBloomDown, 'uSrc'),
+        srcSize: gl.getUniformLocation(this.passBloomDown, 'uSrcSize'),
+        threshold: gl.getUniformLocation(this.passBloomDown, 'uThreshold'),
+      };
+      this.locBloomH = {
+        src: gl.getUniformLocation(this.passBloomH, 'uSrc'),
+        texel: gl.getUniformLocation(this.passBloomH, 'uTexel'),
+        radius: gl.getUniformLocation(this.passBloomH, 'uRadius'),
+      };
+      this.locBloomV = {
+        src: gl.getUniformLocation(this.passBloomV, 'uSrc'),
+        texel: gl.getUniformLocation(this.passBloomV, 'uTexel'),
+        radius: gl.getUniformLocation(this.passBloomV, 'uRadius'),
+      };
+
+      // Static GL state
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.disable(gl.STENCIL_TEST);
+      gl.disable(gl.BLEND);
+      gl.clearColor(0, 0, 0, 1);
+
+      // Initial size
+      this.resize();
+      // Seed initial blob state
+      this.blobs.init(SEED, this.cssW, this.cssH);
+      // Upload initial blob texture
+      this._uploadBlobs();
+
+      this.lastT = performance.now();
+      this.fpsWindowStart = this.lastT;
+
+      // Context loss / restore
+      this.canvas.addEventListener('webglcontextlost', (e) => {
+        e.preventDefault();
+        this.contextLost = true;
+        if (this.rafId) cancelAnimationFrame(this.rafId);
+        this.rafId = 0;
+      }, false);
+      this.canvas.addEventListener('webglcontextrestored', () => {
+        this.contextLost = false;
+        this._reinitGPU();
+        this.lastT = performance.now();
+        if (!this.reducedMotion) this.startLoop();
+      }, false);
+    }
+
+    _buildBuffers() {
+      const gl = this.gl;
+      if (this.version === 2) {
+        // Pass-1: 4 corners + per-instance index (built-in via gl_InstanceID, no VBO needed)
+        // We do still need an empty VAO to be bound for the draw call
+        this.vao1 = gl.createVertexArray();
+        // Pass-2: no buffer needed (gl_VertexID)
+        this.vao2 = gl.createVertexArray();
+      } else {
+        // WebGL1 pass-1: aCorner attribute + aInstanceId attribute (divisor=1)
+        const corners = new Float32Array([
+          -1, -1,  1, -1,  -1, 1,  1, 1
+        ]);
+        this.vboCorner = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vboCorner);
+        gl.bufferData(gl.ARRAY_BUFFER, corners, gl.STATIC_DRAW);
+
+        const inst = new Float32Array(this.blobs.maxN);
+        for (let i = 0; i < this.blobs.maxN; i++) inst[i] = i;
+        this.vboInstId = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vboInstId);
+        gl.bufferData(gl.ARRAY_BUFFER, inst, gl.STATIC_DRAW);
+
+        // Pass-2: aPos attribute (fullscreen triangle)
+        const tri = new Float32Array([
+          -1, -1,   3, -1,   -1, 3
+        ]);
+        this.vboPass2 = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vboPass2);
+        gl.bufferData(gl.ARRAY_BUFFER, tri, gl.STATIC_DRAW);
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    }
+
+    _reinitGPU() {
+      // Recreate all GPU resources on context restore. CPU blob state preserved.
+      const gl = this.gl;
+      const { version, floatType } = this;
+      this.fmtFBO  = fboFormat(gl, floatType);
+      this.fmtBlob = blobTexFormat(gl, version, floatType);
+      this.scaleMode = (floatType === 'u8') ? 'u8' : this.fmtBlob.pack;
+
+      const vs1 = (version === 2)
+        ? document.getElementById('vs-pass1').textContent
+        : document.getElementById('vs-pass1-wgl1').textContent;
+      const fs1 = (version === 2)
+        ? document.getElementById('fs-pass1').textContent
+        : document.getElementById('fs-pass1-wgl1').textContent;
+      const vs2 = (version === 2)
+        ? document.getElementById('vs-pass2').textContent
+        : document.getElementById('vs-pass2-wgl1').textContent;
+      const fs2 = (version === 2)
+        ? document.getElementById('fs-pass2').textContent
+        : document.getElementById('fs-pass2-wgl1').textContent;
+
+      this.pass1 = linkProgram(gl, vs1, fs1);
+      this.pass2 = linkProgram(gl, vs2, fs2);
+
+      this.loc1 = {
+        proj: gl.getUniformLocation(this.pass1, 'uProj'),
+        blobs: gl.getUniformLocation(this.pass1, 'uBlobs'),
+        texW: gl.getUniformLocation(this.pass1, 'uTexW'),
+        sat:  gl.getUniformLocation(this.pass1, 'uSat'),
+        lit:  gl.getUniformLocation(this.pass1, 'uLit')
+      };
+      this.loc2 = {
+        fbo:  gl.getUniformLocation(this.pass2, 'uFbo'),
+        bloom: gl.getUniformLocation(this.pass2, 'uBloom'),
+        time: gl.getUniformLocation(this.pass2, 'uTime'),
+        coreLo: gl.getUniformLocation(this.pass2, 'uCoreLo'),
+        coreHi: gl.getUniformLocation(this.pass2, 'uCoreHi'),
+        haloLo: gl.getUniformLocation(this.pass2, 'uHaloLo'),
+        haloHi: gl.getUniformLocation(this.pass2, 'uHaloHi'),
+        glow:   gl.getUniformLocation(this.pass2, 'uGlowStrength'),
+        bgTop: gl.getUniformLocation(this.pass2, 'uBgTop'),
+        bgBot: gl.getUniformLocation(this.pass2, 'uBgBot'),
+        noiseAmp: gl.getUniformLocation(this.pass2, 'uNoiseAmp'),
+        noiseScale: gl.getUniformLocation(this.pass2, 'uNoiseScale'),
+        tintSpeed: gl.getUniformLocation(this.pass2, 'uTintSpeed'),
+        vigAmp: gl.getUniformLocation(this.pass2, 'uVigAmp'),
+        mouse: gl.getUniformLocation(this.pass2, 'uMouse'),
+        mouseActive: gl.getUniformLocation(this.pass2, 'uMouseActive'),
+        mousePressed: gl.getUniformLocation(this.pass2, 'uMousePressed'),
+        cursorRadius: gl.getUniformLocation(this.pass2, 'uCursorRadius'),
+        cursorIntensity: gl.getUniformLocation(this.pass2, 'uCursorIntensity'),
+        cursorColor: gl.getUniformLocation(this.pass2, 'uCursorColor'),
+        resetFlash: gl.getUniformLocation(this.pass2, 'uResetFlash'),
+        bloomStrength: gl.getUniformLocation(this.pass2, 'uBloomStrength'),
+        fboSize: gl.getUniformLocation(this.pass2, 'uFboSize'),
+      };
+
+      this._buildBuffers();
+      this.velTex = createDataTexture(gl, this.fmtBlob);
+      this.blobTex = createDataTexture(gl, this.fmtBlob);
+      this._allocFBO();
+
+      // Link bloom programs (mirror init)
+      const linkPair = (vsId, fsId, vsId1, fsId1) => {
+        const vsSrc = (version === 2) ? document.getElementById(vsId).textContent : document.getElementById(vsId1).textContent;
+        const fsSrc = (version === 2) ? document.getElementById(fsId).textContent : document.getElementById(fsId1).textContent;
+        return linkProgram(gl, vsSrc, fsSrc);
+      };
+      this.passBloomDown = linkPair('vs-bloom', 'fs-bloom-down', 'vs-bloom-wgl1', 'fs-bloom-down-wgl1');
+      this.passBloomH    = linkPair('vs-bloom', 'fs-bloom-h',    'vs-bloom-wgl1', 'fs-bloom-h-wgl1');
+      this.passBloomV    = linkPair('vs-bloom', 'fs-bloom-v',    'vs-bloom-wgl1', 'fs-bloom-v-wgl1');
+      this.locBloomDown = {
+        src: gl.getUniformLocation(this.passBloomDown, 'uSrc'),
+        srcSize: gl.getUniformLocation(this.passBloomDown, 'uSrcSize'),
+        threshold: gl.getUniformLocation(this.passBloomDown, 'uThreshold'),
+      };
+      this.locBloomH = {
+        src: gl.getUniformLocation(this.passBloomH, 'uSrc'),
+        texel: gl.getUniformLocation(this.passBloomH, 'uTexel'),
+        radius: gl.getUniformLocation(this.passBloomH, 'uRadius'),
+      };
+      this.locBloomV = {
+        src: gl.getUniformLocation(this.passBloomV, 'uSrc'),
+        texel: gl.getUniformLocation(this.passBloomV, 'uTexel'),
+        radius: gl.getUniformLocation(this.passBloomV, 'uRadius'),
+      };
+      this._allocBloomFBOs();
+
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.disable(gl.STENCIL_TEST);
+      gl.disable(gl.BLEND);
+      gl.clearColor(0, 0, 0, 1);
+
+      this._uploadBlobs();
+    }
+
+    _allocFBO() {
+      if (this.fbo) {
+        this.gl.deleteTexture(this.fbo.tex);
+        this.gl.deleteFramebuffer(this.fbo.fbo);
+      }
+      this.fbo = createFBO(this.gl, this.fboW, this.fboH, this.fmtFBO);
+    }
+
+    _allocBloomFBOs() {
+      const gl = this.gl;
+      if (this.bloomDownW <= 0 || this.bloomDownH <= 0) return;
+      // Downsample FBO: same format as field FBO (RGBA32F + NEAREST)
+      this.fboBloomDown = createDownsampleFBO(gl, this.bloomDownW, this.bloomDownH, this.fmtFBO);
+      // Blur FBOs: RGBA8 + LINEAR (safe on macOS Chrome)
+      this.fboBloomH = createBlurFBO(gl, this.bloomBlurW, this.bloomBlurH);
+      this.fboBloomV = createBlurFBO(gl, this.bloomBlurW, this.bloomBlurH);
+    }
+    _resizeBloomFBOs() {
+      const gl = this.gl;
+      if (this.fboBloomDown) { gl.deleteFramebuffer(this.fboBloomDown.fbo); gl.deleteTexture(this.fboBloomDown.tex); }
+      if (this.fboBloomH)    { gl.deleteFramebuffer(this.fboBloomH.fbo);    gl.deleteTexture(this.fboBloomH.tex); }
+      if (this.fboBloomV)    { gl.deleteFramebuffer(this.fboBloomV.fbo);    gl.deleteTexture(this.fboBloomV.tex); }
+      this.fboBloomDown = null;
+      this.fboBloomH = null;
+      this.fboBloomV = null;
+      this._allocBloomFBOs();
+    }
+    _uploadVelocities() {
+      const gl = this.gl;
+      if (!this.velTex) return;
+      const data = this.blobs.packVel(this.packedVelF32);
+      gl.bindTexture(gl.TEXTURE_2D, this.velTex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_W, TEX_H, gl.RGBA, gl.FLOAT, data);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+    _nearestBlobHue(mx, my) {
+      if (mx < 0 || my < 0) return 0;
+      let bestI = -1, bestD = Infinity;
+      const px = this.blobs.px, py = this.blobs.py, r = this.blobs.r;
+      const N = this.blobs.n;
+      for (let i = 0; i < N; i++) {
+        if (r[i] === 0) continue;
+        const dx = px[i] - mx, dy = py[i] - my;
+        const d2 = dx*dx + dy*dy;
+        if (d2 < bestD) { bestD = d2; bestI = i; }
+      }
+      return bestI < 0 ? 0 : this.blobs.hue[bestI];
+    }
+    triggerReset() {
+      const seed = (Date.now() ^ (Date.now() >>> 16)) >>> 0;
+      this.blobs.reset(seed, this.cssW, this.cssH);
+      this._uploadBlobs();
+      this.resetFlashT = RESET_FLASH_MS / 1000;
+      this.mouse.lastResetT = performance.now();
+    }
+    trySpawn(x, y) {
+      // If at MAX_N with no free slot → tiny HUD flash, no blob change
+      let slot = -1;
+      for (let i = 0; i < this.blobs.maxN; i++) {
+        if (this.blobs.r[i] === 0) { slot = i; break; }
+      }
+      if (slot < 0 && this.blobs.n >= MAX_N) {
+        this.spawnFlashT = SPAWN_FLASH_MS / 1000;
+        return -1;
+      }
+      const spawnRng = mulberry32((Date.now() ^ (x * 73856093) ^ (y * 19349663)) >>> 0);
+      const i = this.blobs.spawn(x, y, spawnRng);
+      this._uploadBlobs();
+      return i;
+    }
+    updateHUD(nowMs) {
+      if (!this.hudEl || this.hudHidden) return;
+      this.hudFpsEl.textContent = this.fpsAvg.toFixed(1);
+      this.hudCountEl.textContent = this.blobs.n + '/' + MAX_N;
+      if (this.spawnFlashT > 0) {
+        this.hudHintEl.textContent = 'MAX';
+        this.hudHintEl.classList.add('flash');
+      } else {
+        this.hudHintEl.textContent = HUD_LINE_HINT;
+        this.hudHintEl.classList.remove('flash');
+      }
+      const idle = (nowMs - this.mouse.lastMoveT) > HUD_IDLE_HIDE_MS;
+      if (idle !== this.hudFadeOut) {
+        this.hudFadeOut = idle;
+        this.hudEl.classList.toggle('fade', idle);
+      }
+    }
+
+    resize() {
+      const { cssW, cssH } = computeSize(this.canvas);
+      this.cssW = cssW;
+      this.cssH = cssH;
+      // Clamp DPR: cap by MAX_DPR and by 1.0 if FPS degraded
+      let dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+      dpr = Math.max(MIN_DPR, Math.min(dpr, this.dpr));
+      dpr = Math.min(dpr, TARGET_DPR); // default toward 1.5
+      if (this.fpsAvg > 0 && this.fpsAvg < SLOW_FPS - 5) {
+        dpr = Math.min(dpr, 1.0);
+      }
+      this.dpr = dpr;
+
+      const W = Math.max(1, Math.round(cssW * dpr));
+      const H = Math.max(1, Math.round(cssH * dpr));
+      this.canvas.width  = W;
+      this.canvas.height = H;
+      this.fboW = W;
+      this.fboH = H;
+
+      this.bloomDownW = Math.max(2, Math.floor(this.fboW / BLOOM_DOWN_DIVISOR));
+      this.bloomDownH = Math.max(2, Math.floor(this.fboH / BLOOM_DOWN_DIVISOR));
+      this.bloomBlurW = this.bloomDownW;
+      this.bloomBlurH = this.bloomDownH;
+      if (this.gl && this.passBloomDown) this._resizeBloomFBOs();
+
+      // Projection: ortho(0, cssW, cssH, 0, -1, 1)
+      this.proj = mat4Ortho(0, cssW, cssH, 0, -1, 1);
+
+      if (this.gl) {
+        if (!this.fbo || this.fbo.w !== W || this.fbo.h !== H) {
+          this._allocFBO();
+        }
+        // Rescale blob positions if canvas size changed meaningfully
+        // (only if blobs were already initialized)
+        if (this.blobs.px[0] !== 0 || this.blobs.py[0] !== 0) {
+          // First-time init happens via init() before resize re-runs.
+          // On subsequent resizes, blob state stays in CSS px and is fine.
+        }
+      }
+    }
+
+    _uploadBlobs() {
+      const gl = this.gl;
+      const fmt = this.fmtBlob;
+      const data = this.blobs.pack(this.packedF32, this.scaleMode);
+      gl.bindTexture(gl.TEXTURE_2D, this.blobTex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEX_W, TEX_H, fmt.format, fmt.type, data);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    // ===== S8 Physics =====
+    step(rawDt) {
+      const dt = Math.min(rawDt, DT_CLAMP);
+      this.time += dt;
+      const blobs = this.blobs;
+      const N = blobs.n;
+      const px = blobs.px, py = blobs.py, vx = blobs.vx, vy = blobs.vy;
+      const r = blobs.r;
+
+      const W = this.cssW;
+      const H = this.cssH;
+      const minDim = Math.min(W, H);
+      const attractR = Math.max(1, minDim * ATTRACT_R_FACTOR);
+      const whirlR   = Math.max(1, minDim * WHIRL_R_FACTOR);
+      const mx = this.mouse.x;
+      const my = this.mouse.y;
+      const mouseActive = mx >= 0 && my >= 0;
+      const mousePressed = mouseActive && this.mouse.pressed;
+      const nowMs = performance.now();
+      const idleMs = mouseActive ? (nowMs - this.mouse.lastMoveT) : Infinity;
+      const idleFactor = (idleMs > IDLE_MS) ? IDLE_FACTOR : 1.0;
+
+      // Damping per-frame, scaled by dt
+      const damp = Math.pow(DAMP_60HZ, 60 * dt);
+
+      // Boundary margins (CSS px)
+      const bMarX = W * BOUNDARY_MARGIN;
+      const bMarY = H * BOUNDARY_MARGIN;
+
+      for (let i = 0; i < N; i++) {
+        let ax = 0, ay = 0;
+
+        // Brownian drift
+        ax += (Math.random() * 2 - 1) * BROWNIAN_ACCEL;
+        ay += (Math.random() * 2 - 1) * BROWNIAN_ACCEL;
+
+        // Mouse attract + whirl
+        if (mouseActive) {
+          const dx = mx - px[i];
+          const dy = my - py[i];
+          const d2 = dx * dx + dy * dy;
+          const rad = mousePressed ? whirlR : attractR;
+          if (d2 < rad * rad) {
+            const d = Math.sqrt(d2) + 1e-6;
+            const t = 1.0 - d / rad;
+            const fall = t * t * (3 - 2 * t); // smoothstep
+            if (mousePressed) {
+              // Tangential CCW: rotate (-dy, dx) -> perpendicular CCW
+              const tx = -dy / d;
+              const ty =  dx / d;
+              const f = WHIRL_PEAK * fall * idleFactor;
+              ax += tx * f;
+              ay += ty * f;
+              // Slight inward bias so blobs swirl tightly around cursor
+              ax += -(dx / d) * (ATTRACT_PEAK * 0.35) * fall * idleFactor;
+              ay += -(dy / d) * (ATTRACT_PEAK * 0.35) * fall * idleFactor;
+            } else {
+              // Radial attract
+              const f = ATTRACT_PEAK * fall * idleFactor;
+              ax += (dx / d) * f;
+              ay += (dy / d) * f;
+            }
+          }
+        }
+
+        // Boundary soft push
+        const rad = r[i];
+        if (px[i] < bMarX + rad)        ax += BOUNDARY_PUSH;
+        if (px[i] > W - bMarX - rad)    ax -= BOUNDARY_PUSH;
+        if (py[i] < bMarY + rad)        ay += BOUNDARY_PUSH;
+        if (py[i] > H - bMarY - rad)    ay -= BOUNDARY_PUSH;
+
+        // Integrate (semi-implicit Euler)
+        let nvx = (vx[i] + ax * dt) * damp;
+        let nvy = (vy[i] + ay * dt) * damp;
+
+        // Velocity clamp
+        const sp2 = nvx * nvx + nvy * nvy;
+        if (sp2 > VMAX * VMAX) {
+          const s = VMAX / Math.sqrt(sp2);
+          nvx *= s; nvy *= s;
+        }
+
+        let npx = px[i] + nvx * dt;
+        let npy = py[i] + nvy * dt;
+
+        // NaN guard
+        if (!isFinite(npx) || !isFinite(npy) || !isFinite(nvx) || !isFinite(nvy)) {
+          npx = (Math.random() * 0.8 + 0.1) * W;
+          npy = (Math.random() * 0.8 + 0.1) * H;
+          nvx = nvy = 0;
+        }
+
+        px[i] = npx; py[i] = npy;
+        vx[i] = nvx; vy[i] = nvy;
+      }
+
+      // Pack |v| for velocity texture
+      const velMag = this.blobs.velMag;
+      for (let i = 0; i < N; i++) {
+        velMag[i] = Math.sqrt(vx[i]*vx[i] + vy[i]*vy[i]);
+      }
+    }
+
+    // ===== S9 Render =====
+    render() {
+      const gl = this.gl;
+      if (!gl) return;
+
+      // Update blob data texture
+      this._uploadBlobs();
+      this._uploadVelocities();
+
+      // --- Pass 1: render instanced quads to FBO with additive blend ---
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo.fbo);
+      gl.viewport(0, 0, this.fboW, this.fboH);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.enable(gl.BLEND);
+      // Field-averaged tint: src is premultiplied (tint*w, w), blend ONE/ONE
+      gl.blendFuncSeparate(gl.ONE, gl.ONE, gl.ONE, gl.ONE);
+
+      gl.useProgram(this.pass1);
+      gl.uniformMatrix4fv(this.loc1.proj, false, this.proj);
+      gl.uniform1i(this.loc1.blobs, 0);
+      gl.uniform1i(this.loc1.texW, TEX_W);
+      // Average saturation/lightness (could vary per-blob, but uniform is faster and visually fine)
+      gl.uniform1f(this.loc1.sat, 0.92);
+      gl.uniform1f(this.loc1.lit, 0.60);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.blobTex);
+
+      if (this.version === 2) {
+        gl.bindVertexArray(this.vao1);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.blobs.n);
+        gl.bindVertexArray(null);
+      } else {
+        // WebGL1: explicit attributes
+        const ext = gl.getExtension('ANGLE_instanced_arrays');
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vboCorner);
+        const aCorner = gl.getAttribLocation(this.pass1, 'aCorner');
+        gl.enableVertexAttribArray(aCorner);
+        gl.vertexAttribPointer(aCorner, 2, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vboInstId);
+        const aInst = gl.getAttribLocation(this.pass1, 'aInstanceId');
+        gl.enableVertexAttribArray(aInst);
+        gl.vertexAttribPointer(aInst, 1, gl.FLOAT, false, 0, 0);
+        ext.vertexAttribDivisorANGLE(aCorner, 0);
+        ext.vertexAttribDivisorANGLE(aInst, 1);
+
+        ext.drawArraysInstancedANGLE(gl.TRIANGLE_STRIP, 0, 4, this.blobs.n);
+
+        ext.vertexAttribDivisorANGLE(aCorner, 0);
+        ext.vertexAttribDivisorANGLE(aInst, 0);
+        gl.disableVertexAttribArray(aCorner);
+        gl.disableVertexAttribArray(aInst);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+      }
+
+      // --- Bloom DOWN (RGBA32F+NEAREST downsample, 4-tap box) ---
+      if (BLOOM_ENABLED && this.fboBloomDown) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboBloomDown.fbo);
+        gl.viewport(0, 0, this.bloomDownW, this.bloomDownH);
+        gl.disable(gl.BLEND);
+        gl.useProgram(this.passBloomDown);
+        gl.uniform2f(this.locBloomDown.srcSize, this.fboW, this.fboH);
+        gl.uniform1f(this.locBloomDown.threshold, BLOOM_THRESHOLD);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.fbo.tex);
+        if (this.version === 2) {
+          gl.bindVertexArray(this.vao2);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.bindVertexArray(null);
+        } else {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.vboPass2);
+          const aPos = gl.getAttribLocation(this.passBloomDown, 'aPos');
+          gl.enableVertexAttribArray(aPos);
+          gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.disableVertexAttribArray(aPos);
+        }
+      }
+
+      // --- Bloom H (RGBA8+LINEAR 9-tap horizontal Gaussian) ---
+      if (BLOOM_ENABLED && this.fboBloomH) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboBloomH.fbo);
+        gl.viewport(0, 0, this.bloomBlurW, this.bloomBlurH);
+        gl.useProgram(this.passBloomH);
+        gl.uniform2f(this.locBloomH.texel, 1.0/this.bloomBlurW, 1.0/this.bloomBlurH);
+        gl.uniform1f(this.locBloomH.radius, BLOOM_RADIUS_PX);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.fboBloomDown.tex);
+        if (this.version === 2) {
+          gl.bindVertexArray(this.vao2);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.bindVertexArray(null);
+        } else {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.vboPass2);
+          const aPos = gl.getAttribLocation(this.passBloomH, 'aPos');
+          gl.enableVertexAttribArray(aPos);
+          gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.disableVertexAttribArray(aPos);
+        }
+      }
+
+      // --- Bloom V (RGBA8+LINEAR 9-tap vertical Gaussian) ---
+      if (BLOOM_ENABLED && this.fboBloomV) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboBloomV.fbo);
+        gl.viewport(0, 0, this.bloomBlurW, this.bloomBlurH);
+        gl.useProgram(this.passBloomV);
+        gl.uniform2f(this.locBloomV.texel, 1.0/this.bloomBlurW, 1.0/this.bloomBlurH);
+        gl.uniform1f(this.locBloomV.radius, BLOOM_RADIUS_PX);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.fboBloomH.tex);
+        if (this.version === 2) {
+          gl.bindVertexArray(this.vao2);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.bindVertexArray(null);
+        } else {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.vboPass2);
+          const aPos = gl.getAttribLocation(this.passBloomV, 'aPos');
+          gl.enableVertexAttribArray(aPos);
+          gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.disableVertexAttribArray(aPos);
+        }
+      }
+
+      // --- Pass 2: fullscreen triangle sampling FBO + bloom, output to screen ---
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      gl.clearColor(BG_BOT_R * 0.5, BG_BOT_G * 0.5, BG_BOT_B * 0.5, 1.0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.disable(gl.BLEND);
+
+      gl.useProgram(this.pass2);
+      gl.uniform1i(this.loc2.fbo, 0);
+      gl.uniform1f(this.loc2.time, this.time);
+      gl.uniform3f(this.loc2.bgTop, BG_TOP_R, BG_TOP_G, BG_TOP_B);
+      gl.uniform3f(this.loc2.bgBot, BG_BOT_R, BG_BOT_G, BG_BOT_B);
+      gl.uniform1f(this.loc2.noiseAmp, BG_NOISE_AMP);
+      gl.uniform1f(this.loc2.noiseScale, BG_NOISE_SCALE);
+      gl.uniform1f(this.loc2.tintSpeed, BG_TINT_SPEED);
+      gl.uniform1f(this.loc2.vigAmp, BG_VIG_AMP);
+      gl.uniform1f(this.loc2.coreLo, CORE_LO);
+      gl.uniform1f(this.loc2.coreHi, CORE_HI);
+      gl.uniform1f(this.loc2.haloLo, HALO_LO);
+      gl.uniform1f(this.loc2.haloHi, HALO_HI);
+      gl.uniform1f(this.loc2.glow,   GLOW_STRENGTH);
+      gl.uniform2f(this.loc2.mouse, this.mouse.x, this.mouse.y);
+      gl.uniform1f(this.loc2.mouseActive, (this.mouse.x >= 0 && this.mouse.y >= 0) ? 1.0 : 0.0);
+      gl.uniform1f(this.loc2.mousePressed, this.mouse.pressed ? 1.0 : 0.0);
+      const cursorR = this.mouse.pressed ? CURSOR_RADIUS_PRESS_PX : CURSOR_RADIUS_HOVER_PX;
+      const cursorI = this.mouse.pressed ? CURSOR_INTENSITY_PRESS : CURSOR_INTENSITY_HOVER;
+      gl.uniform1f(this.loc2.cursorRadius, cursorR);
+      gl.uniform1f(this.loc2.cursorIntensity, cursorI);
+      // Cursor color: warm white blended toward nearest blob hue
+      const accent = this._nearestBlobHue(this.mouse.x, this.mouse.y);
+      const accentR = 0.5 + 0.5 * Math.cos(accent * 6.28318);
+      const accentG = 0.5 + 0.5 * Math.cos((accent - 0.333) * 6.28318);
+      const accentB = 0.5 + 0.5 * Math.cos((accent - 0.667) * 6.28318);
+      const baseR = 1.00, baseG = 0.96, baseB = 0.86;
+      gl.uniform3f(this.loc2.cursorColor,
+        baseR * (1-CURSOR_ACCENT_BLEND) + accentR * CURSOR_ACCENT_BLEND,
+        baseG * (1-CURSOR_ACCENT_BLEND) + accentG * CURSOR_ACCENT_BLEND,
+        baseB * (1-CURSOR_ACCENT_BLEND) + accentB * CURSOR_ACCENT_BLEND);
+      gl.uniform1f(this.loc2.resetFlash, this.resetFlashT > 0 ? this.resetFlashT / (RESET_FLASH_MS/1000) : 0.0);
+      gl.uniform1f(this.loc2.bloomStrength, BLOOM_STRENGTH);
+      gl.uniform2f(this.loc2.fboSize, this.fboW, this.fboH);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.fbo.tex);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.fboBloomV ? this.fboBloomV.tex : this.fbo.tex);
+      gl.uniform1i(this.loc2.bloom, 1);
+
+      if (this.version === 2) {
+        gl.bindVertexArray(this.vao2);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.bindVertexArray(null);
+      } else {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vboPass2);
+        const aPos = gl.getAttribLocation(this.pass2, 'aPos');
+        gl.enableVertexAttribArray(aPos);
+        gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.disableVertexAttribArray(aPos);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+      }
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+
+    // ===== FPS governor =====
+    updateFPS(now) {
+      const dt = (now - this.fpsWindowStart) / 1000;
+      this.fpsFrames++;
+      this.fpsAccum += dt;
+      // Decrement flash timers (per frame, smoothly)
+      if (this.resetFlashT > 0) this.resetFlashT = Math.max(0, this.resetFlashT - dt);
+      if (this.spawnFlashT > 0) this.spawnFlashT = Math.max(0, this.spawnFlashT - dt);
+      // HUD update (throttled to FPS_WINDOW below)
+      if (this.fpsAccum >= FPS_WINDOW) {
+        this.fpsAvg = this.fpsFrames / this.fpsAccum;
+        this.fpsFrames = 0;
+        this.fpsAccum = 0;
+        this.fpsWindowStart = now;
+        // HUD write at end of window
+        if (this.updateHUD) this.updateHUD(now);
+        // Adaptive N
+        if (this.fpsAvg < SLOW_FPS) {
+          if (this.slowSince < 0) this.slowSince = now;
+          if (now - this.slowSince > 500 && this.blobs.n > MIN_N) {
+            const newN = Math.max(MIN_N, Math.floor(this.blobs.n * REDUCE_FACTOR));
+            if (newN !== this.blobs.n) {
+              this.blobs.n = newN;
+              this.slowSince = now;
+            }
+          }
+        } else {
+          this.slowSince = -1;
+          if (this.fpsAvg > FAST_FPS && this.blobs.n < INITIAL_N) {
+            const newN = Math.min(INITIAL_N, Math.ceil(this.blobs.n * GROW_FACTOR));
+            if (newN !== this.blobs.n) {
+              this.blobs.n = newN;
+            }
+          }
+        }
+      }
+    }
+
+    // ===== Loop =====
+    loop(t) {
+      if (this.contextLost) return;
+      this.rafId = requestAnimationFrame((tt) => this.loop(tt));
+      const now = t || performance.now();
+      let dt = (now - this.lastT) / 1000;
+      if (!isFinite(dt) || dt < 0) dt = 0;
+      this.lastT = now;
+      this.updateFPS(now);
+
+      this.step(dt);
+      this.render();
+    }
+
+    renderOnce() {
+      // Used for prefers-reduced-motion: a single frame
+      this.step(0);
+      this.render();
+    }
+
+    startLoop() {
+      if (this.running) return;
+      this.running = true;
+      this.lastT = performance.now();
+      this.rafId = requestAnimationFrame((t) => this.loop(t));
+    }
+
+    stopLoop() {
+      this.running = false;
+      if (this.rafId) cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+  }
+
+  // ===== S10 Self-test =====
+  function runSelfTest(app, mouse) {
+    const results = {
+      v1_console: !!(window.console && typeof console.log === 'function'),
+      v2_gl: !!app.gl,
+      v3_version: app.version,
+      v4_floatType: app.floatType,
+      v5_instancing: app.instancing,
+      v6_pass1Compiled: !!app.pass1,
+      v7_pass2Compiled: !!app.pass2,
+      v8_fbo: !!app.fbo,
+      v9_blobCount: app.blobs.n,
+      v10_mouse: !!(mouse && typeof mouse.x === 'number'),
+      v11_resizeHandler: true, // resize + orientation listeners attached in boot()
+      v12_reducedMotion: !!app.reducedMotion,
+      v13_capability: app.floatType,
+      v14_bloomPrograms: !!(app.passBloomDown && app.passBloomH && app.passBloomV),
+      v15_bloomFBOs: !!(app.fboBloomDown && app.fboBloomH && app.fboBloomV),
+      v16_velTex: !!app.velTex,
+      v17_hudElement: !!(app.hudEl && document.getElementById('hud')),
+      v18_spawnMethod: typeof app.trySpawn === 'function',
+      v19_resetMethod: typeof app.triggerReset === 'function',
+      v20_bloomShaderSources: !!(document.getElementById('fs-bloom-down') && document.getElementById('fs-bloom-h') && document.getElementById('fs-bloom-v'))
+    };
+    // ok is true iff critical capabilities are present; informational flags
+    // (reducedMotion, etc.) don't affect ok
+    const ok = !!results.v1_console
+      && !!results.v2_gl
+      && (results.v3_version === 1 || results.v3_version === 2)
+      && !!results.v6_pass1Compiled
+      && !!results.v7_pass2Compiled
+      && !!results.v8_fbo
+      && results.v9_blobCount > 0
+      && !!results.v10_mouse
+      && !!results.v14_bloomPrograms
+      && !!results.v15_bloomFBOs
+      && !!results.v16_velTex
+      && !!results.v17_hudElement
+      && !!results.v18_spawnMethod
+      && !!results.v19_resetMethod
+      && !!results.v20_bloomShaderSources;
+    return Object.assign({ ok }, results);
+  }
+
+  // ===== S11 Boot =====
+  function boot() {
+    const canvas = document.getElementById('gl');
+    if (!canvas) {
+      document.getElementById('fallback').classList.add('show');
+      return;
+    }
+    const mouse = new Mouse();
+    mouse.attach(canvas);
+
+    const reducedMotion = window.matchMedia &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    let app;
+    try {
+      app = new App(canvas, mouse, reducedMotion);
+      app.init();
+    } catch (err) {
+      console.error('[interactive-metaballs] init failed:', err);
+      document.getElementById('fallback').classList.add('show');
+      window.__meta = {
+        version: VERSION,
+        ok: false,
+        error: err && err.message ? err.message : String(err)
+      };
+      return;
+    }
+
+    // Resize
+    let resizeRaf = 0;
+    const onResize = () => {
+      if (resizeRaf) return;
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0;
+        app.resize();
+        if (reducedMotion) app.renderOnce();
+      });
+    };
+    window.addEventListener('resize', onResize, { passive: true });
+    window.addEventListener('orientationchange', onResize, { passive: true });
+
+    // ===== HUD DOM mount =====
+    const hud = document.createElement('div');
+    hud.id = 'hud';
+    hud.innerHTML =
+      '<div class="line"><span class="k">fps</span><span id="hud-fps" class="v">--</span></div>' +
+      '<div class="line"><span class="k">blobs</span><span id="hud-count" class="v">--</span></div>' +
+      '<div class="line hint" id="hud-hint">' + HUD_LINE_HINT + '</div>';
+    document.body.appendChild(hud);
+    app.hudEl = hud;
+    app.hudFpsEl = document.getElementById('hud-fps');
+    app.hudCountEl = document.getElementById('hud-count');
+    app.hudHintEl = document.getElementById('hud-hint');
+
+    // ===== Keyboard: R = reset, H = toggle HUD =====
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'r' || e.key === 'R') { app.triggerReset(); e.preventDefault(); }
+      else if (e.key === 'h' || e.key === 'H') {
+        app.hudHidden = !app.hudHidden;
+        app.hudEl.classList.toggle('hidden', app.hudHidden);
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    // ===== Suppress browser context menu on canvas (so right-click = reset) =====
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    // ===== Pointer click dispatch (in addition to Mouse.attach onDown) =====
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button === 0) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (e.clientX - rect.left) * (canvas.clientWidth / rect.width);
+        const y = (e.clientY - rect.top)  * (canvas.clientHeight / rect.height);
+        app.trySpawn(x, y);
+      } else if (e.button === 2) {
+        app.triggerReset();
+      }
+    }, { passive: true });
+
+    // Start loop
+    if (reducedMotion) {
+      app.renderOnce();
+    } else {
+      app.startLoop();
+    }
+
+    // ===== Debug hook =====
+    window.__meta = {
+      version: VERSION,
+      get gl() { return app.gl; },
+      get pass1() { return app.pass1; },
+      get pass2() { return app.pass2; },
+      get fbo() { return app.fbo; },
+      get blobs() { return app.blobs; },
+      get mouse() { return mouse; },
+      get capability() {
+        return {
+          version: app.version,
+          floatType: app.floatType,
+          instancing: app.instancing,
+          dpr: app.dpr,
+          fboW: app.fboW,
+          fboH: app.fboH
+        };
+      },
+      get running() { return app.running; },
+      get contextLost() { return app.contextLost; },
+      fps: () => app.fpsAvg,
+      renderOnce: () => app.renderOnce(),
+      setN: (n) => { app.blobs.n = Math.max(MIN_N, Math.min(MAX_N, n | 0)); },
+      trySpawn: (x, y) => app.trySpawn(x, y),
+      triggerReset: () => app.triggerReset(),
+      selftest: () => runSelfTest(app, mouse)
+    };
+
+    // Expose version immediately (so even failed init has something)
+    window.__meta.version = VERSION;
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>
