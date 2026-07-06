@@ -10,9 +10,6 @@ build/
 .omo/
 .playwright-mcp/
 
-# Vercel (pre-add to prevent OpenCode auto-modify — coding-mission v3.5 pattern)
-.vercel/
-
 # Env
 .env
 .env.local
