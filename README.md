@@ -10,7 +10,7 @@ Raw WebGL 1.0 컨텍스트에서 두 패스(downsample → 가우시안 블러)�
 
 ## 🎬 라이브 데모
 
-> **👉 [https://interactive-metaballs.vercel.app/](https://interactive-metaballs.vercel.app/)** — 브라우저에서 바로 실행 (60fps, GPU 가속 권장)
+> **👉 [https://sigco3111.github.io/interactive-metaballs/](https://sigco3111.github.io/interactive-metaballs/)** — 브라우저에서 바로 실행 (60fps, GPU 가속 권장)
 
 | | |
 |---|---|
