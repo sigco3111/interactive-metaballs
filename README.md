@@ -15,7 +15,7 @@ Raw WebGL 1.0 컨텍스트에서 두 패스(downsample → 가우시안 블러)�
 | | |
 |---|---|
 | ![Status](https://img.shields.io/badge/Status-Live-22C55E?style=flat-square) | ![Stack](https://img.shields.io/badge/Stack-WebGL_+_GLSL-06B6D4?style=flat-square) |
-| ![Live](https://img.shields.io/badge/Live-Demo-7C3AED?style=for-the-badge&logo=vercel&logoColor=white) | [![Repo](https://img.shields.io/badge/GitHub-sigco3111%2Finteractive--metaballs-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/sigco3111/interactive-metaballs) |
+| ![Live](https://img.shields.io/badge/Live-Demo-222222?style=for-the-badge&logo=githubpages&logoColor=white) | [![Repo](https://img.shields.io/badge/GitHub-sigco3111%2Finteractive--metaballs-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/sigco3111/interactive-metaballs) |
 | ![License](https://img.shields.io/badge/License-MIT-F1C40F?style=flat-square) | ![Deps](https://img.shields.io/badge/Dependencies-0-9CA3AF?style=flat-square) |
 
 ### 🎮 빠른 사용법
@@ -70,7 +70,7 @@ thread responsive. 모든 의존관계의 코드를 하나의 HTML에 담는 형
 
 ## 🚀 실행 방법
 
-### 방법 1: 라이브 데모 (Vercel) — 가장 간단
+### 방법 1: 라이브 데모 (GitHub Pages) — 가장 간단
 위 Live Demo 링크 클릭 → 별도 설치 없이 바로 확인 가능합니다.
 
 ### 방법 2: 그냥 브라우저로 열기
